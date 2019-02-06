@@ -1,0 +1,136 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: api gateway
+
+Parameters:
+  RestApiName:
+    Description: Name for the API Gateway
+    Type: String
+    Default: aacorne
+  ServiceName:
+    Description: Prefix name to identify the service in API Gateway
+    Type: String
+    Default: aacorne
+  ApiGatewayStage:
+    Default : Staging
+    Type: String
+  ApiGatewayFriendlyName:
+    Description: FQDN friendly name for the API Gateway URL
+    Type: String
+  ValidationDomain:
+    Description: Domain to validate ACM-generated certs against
+    Type: String
+  HostedZone:
+    Description: Personal Route53 hosted zone, to create custom domain name for
+    Type: String
+  NATgwEip1:
+    Description: NAT EIP in production network
+    Type: String
+    Default: XXX
+
+Resources:
+  RestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Description: Sample API Gateway
+      Name: !Ref RestApiName
+      EndpointConfiguration:
+        Types:
+        - REGIONAL
+      Policy:
+        Version: "2012-10-17"
+        Statement:
+          # Allow only the specified IP blocks to access the APIgw
+          - Effect: Allow
+            Action: execute-api:Invoke
+            Principal: "*"
+            Resource: execute-api:/*
+            Condition:
+              IpAddress:
+                aws:SourceIp:
+                - !Ref NATgwEip1
+
+  ApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId:
+        Ref: RestApi
+      ParentId: !GetAtt RestApi.RootResourceId
+      PathPart: !Ref RestApiName
+
+  ResourceMethodGET:
+    DependsOn:
+    - ApiGatewayResource
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ResourceId:
+        Ref: ApiGatewayResource
+      RestApiId:
+        Ref: RestApi
+      ApiKeyRequired: false
+      AuthorizationType: NONE
+      HttpMethod: GET
+#      MethodResponses:
+#      - StatusCode: 200
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+        - StatusCode: 200
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref RestApi
+      StageName: !Ref ApiGatewayStage
+    DependsOn:
+    - ResourceMethodGET
+
+  # NOTE: not supported for private APIgw
+  ApiGatewayFriendlyDomainName:
+    Type: AWS::ApiGateway::DomainName
+    Properties:
+      RegionalCertificateArn: !Ref ApiGatewayCertificate
+      DomainName: !Ref ApiGatewayFriendlyName
+      EndpointConfiguration:
+        # NOTE: this must correspond with the APIgw config
+        Types:
+          - REGIONAL
+
+  # wildcard certificate for the cluster's ALB
+  # not required if we're not using custom names
+  ApiGatewayCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref ApiGatewayFriendlyName
+      DomainValidationOptions:
+        - DomainName: !Ref ApiGatewayFriendlyName
+          ValidationDomain: !Ref ValidationDomain
+
+  # Route53 CNAME record for the service
+  ServiceDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Ref HostedZone
+      AliasTarget:
+        # note these attributes returned from the custom domain name resource
+        DNSName: !GetAtt ApiGatewayFriendlyDomainName.RegionalDomainName
+        HostedZoneId: !GetAtt ApiGatewayFriendlyDomainName.RegionalHostedZoneId
+      # create CNAME in the form service-stage.hostedzone
+      # does this have to correspond to the AWS::ApiGateway::DomainName resource?
+      Name: !Join ["", [!Ref ServiceName, "-", !Ref ApiGatewayStage, ".", !Ref HostedZone]]
+      Type: A
+
+Outputs:
+  ApiGatewayUrl:
+    Description: System-generated URL of the API gateway
+    Value:
+      Fn::Join:
+      - ''
+      - - https://
+        - Ref: RestApi
+        - ".execute-api."
+        - Ref: AWS::Region
+        - ".amazonaws.com"
+
+  ApiGatewayFriendlyName:
+    Description: Friendly name for the API Gateway
+    Value: !Ref ServiceDNSRecord
