@@ -11,7 +11,7 @@ Parameters:
     Type: String
     Default: aacorne
   ApiGatewayStage:
-    Default : Staging
+    Default : dev
     Type: String
   ApiGatewayFriendlyName:
     Description: FQDN friendly name for the API Gateway URL
@@ -66,23 +66,79 @@ Resources:
         Ref: ApiGatewayResource
       RestApiId:
         Ref: RestApi
-      ApiKeyRequired: false
+      ApiKeyRequired: true
       AuthorizationType: NONE
       HttpMethod: GET
-#      MethodResponses:
-#      - StatusCode: 200
+      MethodResponses:
+      - StatusCode: 200
       Integration:
         Type: MOCK
         IntegrationResponses:
         - StatusCode: 200
+#        mapping template:
+#          content-type: application/json
+#          template body:
 
-  ApiGatewayDeployment:
+
+  # the APIgw Deployment resource needs to be "new" every time the stack is updated, otherwise APIgw changes are not
+  # deployed. The Jinja variable requires parsing via the j2cli tool during the pipeline to update the value.
+  #
+  # Setting a deletionpolicy to retain allows us to keep older deployment versions - not strictly required but good
+  # for rollback.
+  #
+  # Don't name the Stage for the deployment explicitly here, but tie the deployment to the stage in the
+  # AWS::ApiGateway::Stage resource below
+  ApiGatewayDeployment{{ TimeStamp }}:
     Type: AWS::ApiGateway::Deployment
-    Properties:
-      RestApiId: !Ref RestApi
-      StageName: !Ref ApiGatewayStage
     DependsOn:
     - ResourceMethodGET
+    DeletionPolicy: Retain
+    Properties:
+      Description: foobar {{ TimeStamp }}
+      RestApiId: !Ref RestApi
+#      StageName: !Ref ApiGatewayStage
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    DependsOn:
+    - ApiGatewayDeployment{{ TimeStamp }}
+    Properties:
+      RestApiId: !Ref RestApi
+      DeploymentId: !Ref ApiGatewayDeployment{{ TimeStamp }}
+      StageName: !Ref ApiGatewayStage
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          LoggingLevel: INFO
+#          MetricsEnabled: true
+#          DataTraceEnabled: true
+
+  ApiGatewayKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Description: !Sub "aacorne API Gateway key for ${ApiGatewayStage}"
+      Enabled: true
+      StageKeys:
+        - RestApiId: !Ref RestApi
+          StageName: !Ref ApiStage
+
+  ApiGatewayUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      ApiStages:
+      - ApiId: !Ref RestApi
+        Stage: !Ref ApiStage
+      Description: !Sub "aacorne API Gateway usage plan for ${ApiGatewayStage}"
+#      Quota: QuotaSettings
+#      Throttle: ThrottleSettings
+#      UsagePlanName: String
+
+  ApiGatewayUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref ApiGatewayKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref ApiGatewayUsagePlan
 
   # NOTE: not supported for private APIgw
   ApiGatewayFriendlyDomainName:
@@ -122,14 +178,7 @@ Resources:
 Outputs:
   ApiGatewayUrl:
     Description: System-generated URL of the API gateway
-    Value:
-      Fn::Join:
-      - ''
-      - - https://
-        - Ref: RestApi
-        - ".execute-api."
-        - Ref: AWS::Region
-        - ".amazonaws.com"
+    Value: !Join ['', ["https://", !Ref RestApi, ".execute-api.", !Sub "${AWS::Region}", ".amazonaws.com"]]
 
   ApiGatewayFriendlyName:
     Description: Friendly name for the API Gateway
